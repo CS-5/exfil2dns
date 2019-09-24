@@ -1,15 +1,15 @@
-// Package exfil2dns is used to exfil strings using encoded DNS queries to a
-// specified domain.
+// Package exfil2dns is used to exfiltrate strings using encoded DNS queries to 
+// a specified domain.
 //
 // Notes
 //
-// This is not meant to be "the best" or "most descrete" exfil over DNS package.
-// There are certainly better ways to do this, but this is a very simple and
-// straightfoward example of what's possible.
+// This is not meant to be "the best" or "most descrete" exfiltration over DNS
+// solution. There are certainly better ways to do this, but this is a very 
+// simple and straightfoward example of what's possible.
 //
 // Exfil over DNS
 //
-// The idea behind exfiling data over DNS is more simple than it sounds. You
+// The idea behind exfiltrating data over DNS is more simple than it sounds. You
 // start with the payload you want to send (Example: "HelloComputer!"). This
 // payload is chunked into byte slices (<24 bytes) and encrypted using NaCl
 // Secretbox with a specified key (Hashed with SHA256) and per-message nonce.
@@ -42,6 +42,11 @@
 //		}
 //	}
 package exfil2dns
+
+/*
+ * exfil2dns.go by Carson Seese. Created: 09/23/2019. Modified: 09/24/2019.
+ * Data exfiltration using DNS queries.
+ */
 
 import (
 	"bytes"
