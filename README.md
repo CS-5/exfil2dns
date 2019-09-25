@@ -1,5 +1,6 @@
 # Exfil2DNS
-Simple library to exfiltrate data using DNS queries. 
+
+Simple library to exfiltrate data using DNS queries.
 
 Written for the _Hands-on Writing Malware in Go_ talk at BSidesDC 2019.
 
@@ -7,13 +8,17 @@ For legal use only.
 
 ## TODO
 
-- [ ] Change "client" and "server" to more accurate names/terms
+- [ ] Change "Client" and "Decryptor" to more accurate names/terms (?)
 - [ ] Finish documentation (and make more consistent)
 - [ ] Make code more concise (where possible)
+- [ ] Make a seperate chunking function (?)
+- [ ] Make Client and Decryptor threadsafe?
+- [ ] More testing
 
 ## Usage
 
 Encrypt and send data:
+
 ```go
 import (
 	"log"
@@ -34,6 +39,7 @@ func main() {
 ```
 
 Decrypt data:
+
 ```go
 import (
     "log"

