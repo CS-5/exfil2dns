@@ -8,7 +8,7 @@ For legal use only.
 
 ## TODO
 
-- [ ] Change "Client" and "Decryptor" to more accurate names/terms (?)
+- [ ] Buffer encrypted bytes
 - [ ] Finish documentation (and make more consistent)
 - [ ] Make code more concise (where possible)
 - [ ] Make a seperate chunking function (?)

