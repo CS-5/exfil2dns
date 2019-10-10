@@ -15,7 +15,7 @@ For legal use only.
 - [ ] Make Client and Decryptor threadsafe?
 - [ ] More testing
 
-## Usage [Go Playground](https://play.golang.org/p/tQlngGpCKn2)
+## Encrypt Usage [Go Playground](https://play.golang.org/p/tQlngGpCKn2)
 
 Encrypt and send data:
 
@@ -41,6 +41,7 @@ func main() {
 	}
 }
 ```
+## Decrypt Usage [Go Playground](https://play.golang.org/p/8LToXvfEAqY)
 
 Decrypt data:
 
