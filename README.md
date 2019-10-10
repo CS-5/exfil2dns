@@ -15,7 +15,7 @@ For legal use only.
 - [ ] Make Client and Decryptor threadsafe?
 - [ ] More testing
 
-## Usage
+## Usage [Go Playground](https://play.golang.org/p/tQlngGpCKn2)
 
 Encrypt and send data:
 
